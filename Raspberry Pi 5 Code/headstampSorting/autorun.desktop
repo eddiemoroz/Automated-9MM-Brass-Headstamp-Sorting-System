@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Headstamp Sorter
+Exec=/home/USER/bin/python3 /home/(PATHWAY WHERE THIS FILE IS LOCATED)/Main_Raspberry_Pi_Software.py
+Path= (PATHWAY WHERE MAIN FOLDER IS LOCATED)
