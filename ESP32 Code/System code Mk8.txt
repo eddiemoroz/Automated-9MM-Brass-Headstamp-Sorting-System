@@ -1,0 +1,172 @@
+#include <Arduino.h>
+
+#define TX_PIN 17
+#define RX_PIN 1
+
+const int servo1pin = 48; //FS90R
+const int servo2pin = 47; //SG90
+const int optintpin = 35; //optical interrupter
+const int estoppin = 46; //Estop
+
+HardwareSerial SerialUARTContact(1);
+
+const int freq = 50;
+const int resolution = 14;
+const int forwardspeed = 1250; //forward 1000-1499us
+const int reversespeed = 1750; //reverse 1501-2000us
+const int servostop = 1500;
+
+const int servo2PosDuty[6] = {410, 735, 1048, 1365, 1776, 1966}; //tuned box angles (in degrees): ~5, ~40, ~75, ~105, ~140, ~175
+
+volatile bool optintval = false;
+volatile bool estopval = false;
+volatile bool newestopval = false;
+
+
+int usToDuty(int us) {
+  return (us * 16384) / 20000;
+}
+
+
+void eStopFunc() {
+  ledcWrite(servo1pin, usToDuty(reversespeed));
+  delay(20); 
+  ledcWrite(servo1pin, usToDuty(servostop));
+  ledcDetach(servo1pin);
+  Serial.println("EStopped");
+}
+
+
+void IRAM_ATTR optISR() {
+  optintval = true;
+}
+
+
+void IRAM_ATTR stopISR() {
+  estopval = digitalRead(estoppin);
+  newestopval = true;
+}
+
+
+void checkStop() {
+  if (newestopval) {
+    newestopval = false;
+    if (estopval) {
+      SerialUARTContact.println("STARTESTOP");
+      Serial.println("STARTESTOP");
+    } else {
+      SerialUARTContact.println("ENDESTOP");
+      Serial.println("ENDESTOP");
+    }
+  }
+}
+
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  ledcAttach(servo1pin, freq, resolution);
+  ledcAttach(servo2pin, freq, resolution);
+  ledcWrite(servo1pin, usToDuty(servostop)); 
+  ledcWrite(servo2pin, servo2PosDuty[2]);  
+  ledcDetach(servo1pin);
+
+  pinMode(optintpin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(optintpin), optISR, RISING);
+
+  pinMode(estoppin, INPUT_PULLDOWN); 
+  attachInterrupt(digitalPinToInterrupt(estoppin), stopISR, CHANGE);
+  
+  estopval = digitalRead(estoppin);
+  SerialUARTContact.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+  Serial.println("System Ready.");
+}
+
+
+void move45deg() {
+  if (estopval) return;
+
+  optintval = false;
+  ledcAttach(servo1pin, freq, resolution);
+  ledcWrite(servo1pin, usToDuty(forwardspeed));
+
+  unsigned long start = millis();
+  while (!optintval) {
+    if (estopval) {
+      eStopFunc(); 
+      return; 
+    }
+    if (millis() - start > 3000) {
+      ledcWrite(servo1pin, usToDuty(servostop));
+      ledcDetach(servo1pin);
+      return;
+    }
+  }
+
+  if (estopval) return; 
+  delayMicroseconds(6000);
+  ledcWrite(servo1pin, usToDuty(reversespeed));
+  delay(20);
+  ledcWrite(servo1pin, usToDuty(servostop));
+  ledcDetach(servo1pin);
+}
+
+
+void loop() {
+  checkStop();
+
+  if (estopval) { //if stopped clear buffer
+    while (SerialUARTContact.available() > 0) {
+      SerialUARTContact.read();
+    }
+    return;
+  }
+  else {
+    if (SerialUARTContact.available()) {
+      String msg = SerialUARTContact.readStringUntil('\n');
+      msg.trim();
+
+      if (msg == "SETUP") {
+        move45deg();
+        delay(1500);
+        move45deg();
+        delay(500);
+        ledcWrite(servo2pin, servo2PosDuty[2]);
+        SerialUARTContact.println("READY");
+      } 
+      else if (msg.length() == 1 && msg[0] >= '1' && msg[0] <= '6') {
+        move45deg();
+        if (!estopval) {
+          delay(100);
+          SerialUARTContact.println("READY");
+          delay(500);
+          int binIdx = (msg[0] - '0') - 1;
+          ledcWrite(servo2pin, servo2PosDuty[binIdx]);
+        }
+      }
+      else if (msg == "TEST") {
+        if (estopval) return;
+
+        ledcAttach(servo1pin, freq, resolution);
+        ledcWrite(servo1pin, usToDuty(forwardspeed));
+
+        unsigned long testStart = millis();
+        while (millis() - testStart < 2000) {
+          if (estopval) {
+            eStopFunc(); 
+            return; 
+          }
+          yield();
+        }
+
+        ledcWrite(servo1pin, usToDuty(servostop));
+        ledcDetach(servo1pin);
+      }
+      else if (msg == "STOP") {
+        move45deg();
+        delay(1500);
+      }
+    }
+  }
+}
